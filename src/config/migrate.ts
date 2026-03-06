@@ -29,7 +29,28 @@ async function migrate() {
       }
 
       console.log(`Running migration: ${file}`);
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+      let sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+
+      // Try to install extensions separately (may require superuser on some hosts)
+      const extensionRegex = /CREATE EXTENSION IF NOT EXISTS\s+"([^"]+)"\s*;/gi;
+      let match;
+      while ((match = extensionRegex.exec(sql)) !== null) {
+        try {
+          await client.query(match[0]);
+          console.log(`  Extension "${match[1]}" ready.`);
+        } catch (extErr: any) {
+          console.warn(`  ⚠️ Extension "${match[1]}" could not be created (may already exist or need manual install): ${extErr.message}`);
+        }
+      }
+      // Remove extension lines from the migration SQL (already handled above)
+      sql = sql.replace(extensionRegex, '').trim();
+
+      if (!sql) {
+        // Migration was extension-only, mark as done
+        await client.query('INSERT INTO migrations (name) VALUES ($1)', [file]);
+        console.log(`Completed: ${file} (extensions only)`);
+        continue;
+      }
 
       await client.query('BEGIN');
       try {

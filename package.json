@@ -26,6 +26,9 @@
     "typesense": "^2.1.0",
     "uuid": "^10.0.0"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
