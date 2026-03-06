@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { query } from '../config/database';
-import { authenticate, AuthRequest } from '../middleware/auth';
+import { authenticate, optionalAuthenticate, AuthRequest } from '../middleware/auth';
 import { upload } from '../middleware/upload';
 
 const router = Router();
@@ -31,7 +31,7 @@ router.post('/', authenticate, upload.single('media'), async (req: AuthRequest, 
 });
 
 // GET /api/posts/user/:userId - Get user's posts
-router.get('/user/:userId', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/user/:userId', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { page = '1', limit = '20' } = req.query;
     const offset = (parseInt(page as string) - 1) * parseInt(limit as string);

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authenticate } from '../middleware/auth';
+import { optionalAuthenticate } from '../middleware/auth';
 
 const router = Router();
 
@@ -15,7 +15,7 @@ function modeToProfile(mode: string): string {
 }
 
 // GET /api/navigation/route — proxy Mapbox Directions API
-router.get('/route', authenticate, async (req: Request, res: Response) => {
+router.get('/route', optionalAuthenticate, async (req: Request, res: Response) => {
   try {
     const { origin_lat, origin_lng, dest_lat, dest_lng, mode } = req.query;
 

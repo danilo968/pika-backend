@@ -1,12 +1,12 @@
 import { Router, Response } from 'express';
 import { query } from '../config/database';
-import { authenticate, AuthRequest } from '../middleware/auth';
+import { authenticate, optionalAuthenticate, AuthRequest } from '../middleware/auth';
 import { upload } from '../middleware/upload';
 
 const router = Router();
 
 // GET /api/users/search?q=query - Search users
-router.get('/search', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/search', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { q } = req.query;
 
@@ -54,7 +54,7 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // GET /api/users/:id - Get user profile
-router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/:id', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const result = await query(
       `SELECT id, username, display_name, avatar_url, bio, created_at

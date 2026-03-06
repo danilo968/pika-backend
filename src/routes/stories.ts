@@ -124,7 +124,7 @@ router.get('/', optionalAuthenticate, async (req: AuthRequest, res: Response) =>
 });
 
 // GET /api/stories/:id - Get a single story
-router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/:id', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const result = await query(
       `SELECT s.*, u.username, u.display_name, u.avatar_url,

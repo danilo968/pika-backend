@@ -73,7 +73,7 @@ router.post('/categories/select', authenticate, async (req: AuthRequest, res: Re
 
 // GET /api/venues/search?q=term&city=cityname - Text search for venues
 // Uses Typesense for fast, typo-tolerant search with PostgreSQL fallback
-router.get('/search', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/search', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { q, city, lat, lng, radius, page, limit } = req.query;
 
@@ -139,7 +139,7 @@ router.get('/search', authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // GET /api/venues?lat=X&lng=Y&radius=Z&category=slug&companion=tag&occasion=tag - Nearby venues
-router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { lat, lng, radius, category, q, companion, occasion, city, page, limit } = req.query;
 
@@ -217,7 +217,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // GET /api/venues/:id - Full venue detail
-router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/:id', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const result = await query(
       `SELECT v.*,
@@ -261,7 +261,7 @@ router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // GET /api/venues/:id/ratings - Paginated Pika Ratings
-router.get('/:id/ratings', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/:id/ratings', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { page, limit } = req.query;
     const pageNum = parseInt((page as string) || '1', 10);
@@ -372,7 +372,7 @@ router.post('/:id/ratings', authenticate, async (req: AuthRequest, res: Response
 });
 
 // GET /api/venues/:id/menu - Structured menu
-router.get('/:id/menu', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/:id/menu', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const venueId = req.params.id as string;
 
