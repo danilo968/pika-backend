@@ -43,7 +43,7 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', name: 'Pika API', version: '1.0.0' });
+  res.json({ status: 'ok', name: 'Pika API', version: '1.0.1', build: '2026-03-06' });
 });
 
 // Routes
