@@ -1,21 +1,72 @@
 import { Router, Response } from 'express';
 import { query } from '../config/database';
-import { authenticate, AuthRequest } from '../middleware/auth';
+import { authenticate, optionalAuthenticate, AuthRequest } from '../middleware/auth';
 import { extractMenuForVenue } from '../services/menuExtractor';
 import { searchVenues as typesenseSearch, upsertVenueById } from '../services/typesenseService';
 import { sendRatingReceivedPush } from '../services/pushService';
 
 const router = Router();
 
-// GET /api/venues/categories - List all venue categories
-router.get('/categories', async (_req, res: Response) => {
+// GET /api/venues/categories - List all venue categories (smart-sorted)
+router.get('/categories', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const result = await query(
-      'SELECT id, slug, name, icon FROM venue_categories ORDER BY sort_order'
-    );
-    res.json(result.rows);
+    const userId = req.userId;
+
+    if (userId) {
+      // Authenticated: blended sort (40% global popularity + 60% personal)
+      const result = await query(
+        `SELECT vc.id, vc.slug, vc.name, vc.icon, vc.icon_name,
+           COALESCE(cp.selection_count, 0)::int AS global_count,
+           COALESCE(personal.cnt, 0)::int AS personal_count
+         FROM venue_categories vc
+         LEFT JOIN category_popularity cp ON cp.category_slug = vc.slug
+         LEFT JOIN (
+           SELECT category_slug, COUNT(*) AS cnt
+           FROM category_selections
+           WHERE user_id = $1 AND selected_at > NOW() - INTERVAL '30 days'
+           GROUP BY category_slug
+         ) personal ON personal.category_slug = vc.slug
+         ORDER BY
+           (0.4 * COALESCE(cp.selection_count, 0) + 0.6 * COALESCE(personal.cnt, 0)) DESC,
+           vc.sort_order ASC`,
+        [userId]
+      );
+      res.json(result.rows.map(({ global_count, personal_count, ...cat }) => cat));
+    } else {
+      // Unauthenticated: global popularity, fallback to sort_order
+      const result = await query(
+        `SELECT vc.id, vc.slug, vc.name, vc.icon, vc.icon_name
+         FROM venue_categories vc
+         LEFT JOIN category_popularity cp ON cp.category_slug = vc.slug
+         ORDER BY COALESCE(cp.selection_count, 0) DESC, vc.sort_order ASC`
+      );
+      res.json(result.rows);
+    }
   } catch (err) {
     console.error('Get categories error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/venues/categories/select - Track category selection
+router.post('/categories/select', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { slug } = req.body;
+    if (!slug) {
+      res.status(400).json({ error: 'Category slug is required' });
+      return;
+    }
+    await query(
+      'INSERT INTO category_selections (user_id, category_slug) VALUES ($1, $2)',
+      [req.userId, slug]
+    );
+    // Refresh materialized view asynchronously (non-blocking)
+    query('REFRESH MATERIALIZED VIEW CONCURRENTLY category_popularity').catch((err) => {
+      console.error('Refresh category_popularity failed:', err);
+    });
+    res.json({ message: 'Selection tracked' });
+  } catch (err) {
+    console.error('Track category selection error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
