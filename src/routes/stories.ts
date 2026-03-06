@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { query } from '../config/database';
-import { authenticate, AuthRequest } from '../middleware/auth';
+import { authenticate, optionalAuthenticate, AuthRequest } from '../middleware/auth';
 import { upload } from '../middleware/upload';
 
 const router = Router();
@@ -89,7 +89,7 @@ router.post('/', authenticate, upload.single('media'), async (req: AuthRequest, 
 });
 
 // GET /api/stories?lat=X&lng=Y&radius=Z - Get stories near location
-router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { lat, lng, radius } = req.query;
 
