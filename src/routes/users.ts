@@ -56,6 +56,13 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
 // GET /api/users/:id - Get user profile
 router.get('/:id', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
+    // Validate UUID format to prevent PostgreSQL cast errors
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(req.params.id as string)) {
+      res.status(400).json({ error: 'Invalid user ID format' });
+      return;
+    }
+
     const result = await query(
       `SELECT id, username, display_name, avatar_url, bio, created_at
        FROM users WHERE id = $1`,
