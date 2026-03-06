@@ -21,8 +21,18 @@ const app = express();
 
 // Middleware — CORS
 const corsOrigin = process.env.CORS_ORIGIN || '*';
+const allowedOrigins: string[] | string = corsOrigin === '*'
+  ? '*'
+  : [
+      ...corsOrigin.split(',').map(s => s.trim()),
+      // Allow local dev servers
+      'http://localhost:8081',
+      'http://127.0.0.1:8081',
+      'http://localhost:19006',
+      'http://localhost:3000',
+    ];
 app.use(cors({
-  origin: corsOrigin === '*' ? '*' : corsOrigin.split(',').map(s => s.trim()),
+  origin: allowedOrigins,
   credentials: true,
 }));
 app.use(express.json());
