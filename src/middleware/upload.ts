@@ -7,7 +7,12 @@ const storage = multer.diskStorage({
     cb(null, process.env.UPLOAD_DIR || './uploads');
   },
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safeExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov'];
+    if (!safeExtensions.includes(ext)) {
+      cb(new Error('Invalid file extension'), '');
+      return;
+    }
     cb(null, `${uuidv4()}${ext}`);
   },
 });
@@ -25,6 +30,6 @@ export const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: parseInt(process.env.MAX_FILE_SIZE || '10485760'), // 10MB
+    fileSize: parseInt(process.env.MAX_FILE_SIZE || '10485760', 10) || 10485760, // 10MB
   },
 });

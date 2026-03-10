@@ -8,8 +8,18 @@ const router = Router();
 router.post('/register', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { token, deviceType } = req.body;
-    if (!token) {
-      res.status(400).json({ error: 'token is required' });
+    if (!token || typeof token !== 'string' || token.trim().length === 0) {
+      res.status(400).json({ error: 'token is required and must be a non-empty string' });
+      return;
+    }
+    if (token.length > 500) {
+      res.status(400).json({ error: 'Token too long' });
+      return;
+    }
+
+    const validDeviceTypes = ['ios', 'android', 'web', 'unknown'];
+    if (deviceType && !validDeviceTypes.includes(deviceType)) {
+      res.status(400).json({ error: 'Invalid device type' });
       return;
     }
 
@@ -34,8 +44,8 @@ router.post('/register', authenticate, async (req: AuthRequest, res: Response) =
 router.post('/unregister', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { token } = req.body;
-    if (!token) {
-      res.status(400).json({ error: 'token is required' });
+    if (!token || typeof token !== 'string') {
+      res.status(400).json({ error: 'token is required and must be a string' });
       return;
     }
 

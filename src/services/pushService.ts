@@ -50,7 +50,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
           if (ticket.details?.error === 'DeviceNotRegistered') {
             await query(
               'UPDATE push_tokens SET is_active = false WHERE token = $1',
-              [(messages[i] as any).to]
+              [(chunk[i] as any).to]
             );
           }
           console.error('Push notification error:', ticket.message);

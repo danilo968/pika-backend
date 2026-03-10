@@ -1,12 +1,25 @@
 import { Router, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { query } from '../config/database';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { isValidUUID, safeParseInt } from '../utils/validation';
 
 const router = Router();
+
+const conversationLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // 10 conversations per minute
+  message: { error: 'Too many requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // GET /api/conversations - List user's conversations
 router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    const parsedLimit = safeParseInt(req.query.limit as string | undefined, 50, 1, 100);
+    const parsedOffset = safeParseInt(req.query.offset as string | undefined, 0, 0, 100000);
+
     const result = await query(
       `SELECT c.id, c.created_at,
          json_agg(json_build_object(
@@ -26,9 +39,16 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
        JOIN conversation_participants cp2 ON c.id = cp2.conversation_id
        JOIN users u ON cp2.user_id = u.id
        WHERE cp.user_id = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM friendships f
+           WHERE f.status = 'blocked'
+             AND ((f.requester_id = $1 AND f.addressee_id = u.id)
+               OR (f.addressee_id = $1 AND f.requester_id = u.id))
+         )
        GROUP BY c.id
-       ORDER BY (SELECT MAX(created_at) FROM messages WHERE conversation_id = c.id) DESC NULLS LAST`,
-      [req.userId]
+       ORDER BY (SELECT MAX(created_at) FROM messages WHERE conversation_id = c.id) DESC NULLS LAST
+       LIMIT $2 OFFSET $3`,
+      [req.userId, parsedLimit, parsedOffset]
     );
 
     res.json(result.rows);
@@ -39,12 +59,36 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // POST /api/conversations - Start a conversation
-router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
+router.post('/', authenticate, conversationLimiter, async (req: AuthRequest, res: Response) => {
   try {
     const { userId: targetUserId } = req.body;
 
-    if (!targetUserId) {
-      res.status(400).json({ error: 'userId is required' });
+    if (!isValidUUID(targetUserId)) {
+      res.status(400).json({ error: 'Valid userId is required' });
+      return;
+    }
+
+    if (targetUserId === req.userId) {
+      res.status(400).json({ error: 'Cannot start a conversation with yourself' });
+      return;
+    }
+
+    // Verify target user exists
+    const targetUser = await query('SELECT id FROM users WHERE id = $1', [targetUserId]);
+    if (targetUser.rows.length === 0) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    // Check if users have blocked each other
+    const blocked = await query(
+      `SELECT 1 FROM friendships
+       WHERE ((requester_id = $1 AND addressee_id = $2) OR (requester_id = $2 AND addressee_id = $1))
+         AND status = 'blocked'`,
+      [req.userId, targetUserId]
+    );
+    if (blocked.rows.length > 0) {
+      res.status(403).json({ error: 'Cannot start this conversation' });
       return;
     }
 
@@ -80,7 +124,13 @@ router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
 // GET /api/conversations/:id/messages - Get messages in a conversation
 router.get('/:id/messages', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const { before, limit = '50' } = req.query;
+    if (!isValidUUID(req.params.id)) {
+      res.status(400).json({ error: 'Invalid conversation ID' });
+      return;
+    }
+
+    const { before } = req.query;
+    const parsedLimit = safeParseInt(req.query.limit as string | undefined, 50, 1, 200);
 
     // Verify user is a participant
     const participant = await query(
@@ -102,21 +152,36 @@ router.get('/:id/messages', authenticate, async (req: AuthRequest, res: Response
     const params: any[] = [req.params.id];
 
     if (before) {
-      params.push(before);
+      if (typeof before !== 'string') {
+        res.status(400).json({ error: 'Invalid before parameter' });
+        return;
+      }
+      const beforeDate = new Date(before);
+      if (isNaN(beforeDate.getTime())) {
+        res.status(400).json({ error: 'Invalid before timestamp' });
+        return;
+      }
+      params.push(beforeDate.toISOString());
       messagesQuery += ` AND m.created_at < $${params.length}`;
     }
 
-    params.push(parseInt(limit as string));
+    params.push(parsedLimit);
     messagesQuery += ` ORDER BY m.created_at DESC LIMIT $${params.length}`;
 
     const result = await query(messagesQuery, params);
 
-    // Mark messages as read
-    await query(
-      `UPDATE messages SET read_at = NOW()
-       WHERE conversation_id = $1 AND sender_id != $2 AND read_at IS NULL`,
-      [req.params.id, req.userId]
-    );
+    // Mark only the fetched messages as read (not all messages in conversation)
+    const unreadIds = result.rows
+      .filter((m: any) => m.sender_id !== req.userId && m.read_at === null)
+      .map((m: any) => m.id);
+
+    if (unreadIds.length > 0) {
+      await query(
+        `UPDATE messages SET read_at = NOW()
+         WHERE id = ANY($1::uuid[]) AND sender_id != $2 AND read_at IS NULL`,
+        [unreadIds, req.userId]
+      );
+    }
 
     res.json(result.rows.reverse());
   } catch (err) {

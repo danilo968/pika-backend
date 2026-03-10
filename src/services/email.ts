@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -13,7 +14,8 @@ const transporter = nodemailer.createTransport({
 const FROM = process.env.SMTP_FROM || 'Pika <noreply@pikaspot.online>';
 
 function generateCode(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  // Use cryptographically secure random number generator
+  return crypto.randomInt(100000, 999999).toString();
 }
 
 async function sendVerificationEmail(email: string, code: string): Promise<void> {

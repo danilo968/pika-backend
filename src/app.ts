@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import path from 'path';
 import dotenv from 'dotenv';
 
@@ -14,32 +15,48 @@ import businessRoutes from './routes/businesses';
 import navigationRoutes from './routes/navigation';
 import supportRoutes from './routes/support';
 import notificationRoutes from './routes/notifications';
+import interactionRoutes from './routes/interactions';
 
 dotenv.config();
 
 const app = express();
 
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable CSP — managed separately for static assets
+  crossOriginEmbedderPolicy: false, // Allow cross-origin resource loading
+}));
+
 // Middleware — CORS
-const corsOrigin = process.env.CORS_ORIGIN || '*';
-const allowedOrigins: string[] | string = corsOrigin === '*'
-  ? '*'
-  : [
-      ...corsOrigin.split(',').map(s => s.trim()),
-      // Allow local dev servers
-      'http://localhost:8081',
-      'http://127.0.0.1:8081',
-      'http://localhost:19006',
-      'http://localhost:3000',
-    ];
+const corsOrigin = process.env.CORS_ORIGIN;
+const isProduction = process.env.NODE_ENV === 'production';
+if (!corsOrigin && isProduction) {
+  console.warn('⚠️  WARNING: CORS_ORIGIN not set in production. Only production origins will be allowed.');
+}
+const allowedOrigins: string[] = [
+  ...(corsOrigin ? corsOrigin.split(',').map(s => s.trim()) : []),
+  // Only allow localhost origins in development
+  ...(!isProduction ? [
+    'http://localhost:8081',
+    'http://127.0.0.1:8081',
+    'http://localhost:19006',
+    'http://localhost:3000',
+  ] : []),
+];
 app.use(cors({
   origin: allowedOrigins,
   credentials: true,
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Serve uploaded files (with security headers)
+app.use('/uploads', (req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'");
+  res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+  next();
+}, express.static(path.join(__dirname, '..', 'uploads')));
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -58,5 +75,6 @@ app.use('/api/businesses', businessRoutes);
 app.use('/api/navigation', navigationRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/interactions', interactionRoutes);
 
 export default app;

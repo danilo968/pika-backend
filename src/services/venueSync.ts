@@ -57,6 +57,23 @@ export async function syncVenues(lat: number, lon: number, radius: number = 5000
   const overpassVenues = await fetchOverpassVenues(lat, lon, radius);
   console.log(`Fetched ${overpassVenues.length} venues from Overpass`);
 
+  if (overpassVenues.length === 0) return { inserted: 0, skipped: 0, total: 0 };
+
+  // Pre-fetch all existing overpass_node_ids in ONE query (eliminates N queries)
+  const overpassIds = overpassVenues.map(ov => ov.id);
+  const existingResult = await query(
+    'SELECT overpass_node_id FROM venues WHERE overpass_node_id = ANY($1::bigint[])',
+    [overpassIds]
+  );
+  const existingNodeIds = new Set(existingResult.rows.map(r => Number(r.overpass_node_id)));
+
+  // Pre-fetch all category slugs in ONE query (eliminates N queries)
+  const catResult = await query('SELECT id, slug FROM venue_categories');
+  const categoryMap = new Map<string, string>();
+  for (const row of catResult.rows) {
+    categoryMap.set(row.slug, row.id);
+  }
+
   let inserted = 0;
   let skipped = 0;
 
@@ -67,26 +84,14 @@ export async function syncVenues(lat: number, lon: number, radius: number = 5000
       continue;
     }
 
-    // Check if already exists by overpass_node_id
-    const existing = await query(
-      'SELECT id FROM venues WHERE overpass_node_id = $1',
-      [ov.id]
-    );
-
-    if (existing.rows.length > 0) {
+    if (existingNodeIds.has(ov.id)) {
       skipped++;
       continue;
     }
 
     const venueType = getVenueType(ov.tags);
     const categorySlug = CATEGORY_MAP[venueType] || 'restaurant';
-
-    // Get category ID
-    const catResult = await query(
-      'SELECT id FROM venue_categories WHERE slug = $1',
-      [categorySlug]
-    );
-    const categoryId = catResult.rows.length > 0 ? catResult.rows[0].id : null;
+    const categoryId = categoryMap.get(categorySlug) || null;
 
     const insertResult = await query(
       `INSERT INTO venues (name, location, address, city, country, phone, email, website,
@@ -141,7 +146,7 @@ if (require.main === module) {
 
   const city = cityArg || 'Tirana';
   const coords = CITY_COORDS[city] || CITY_COORDS['Tirana'];
-  const radius = radiusArg ? parseInt(radiusArg) : 5000;
+  const radius = radiusArg ? (parseInt(radiusArg) || 5000) : 5000;
 
   syncVenues(coords.lat, coords.lon, radius, city)
     .then((result) => {

@@ -2,39 +2,93 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
+import rateLimit from 'express-rate-limit';
 import { query } from '../config/database';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { generateCode, sendVerificationEmail, sendPasswordResetEmail } from '../services/email';
 
 const router = Router();
 
+// Rate limiting for auth endpoints — prevents brute-force & credential-stuffing
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 attempts per window
+  message: { error: 'Too many attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Email validation: requires ≥2 char TLD and ≥1 char local + domain parts
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function calculateAge(dob: string): number {
+  const birth = new Date(dob);
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const monthDiff = today.getMonth() - birth.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) age--;
+  return age;
+}
+
+// Valid JWT expiration patterns: number (seconds) or string like '15m', '7d', '1h'
+const JWT_EXPIRY_REGEX = /^\d+[smhd]?$/;
+
 function generateTokens(userId: string) {
+  const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '15m';
+  const jwtRefreshExpiresIn = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
+
   const accessToken = jwt.sign({ userId }, process.env.JWT_SECRET!, {
-    expiresIn: (process.env.JWT_EXPIRES_IN || '15m') as any,
-  });
+    expiresIn: jwtExpiresIn,
+  } as jwt.SignOptions);
   const refreshToken = jwt.sign({ userId, tokenId: uuidv4() }, process.env.JWT_REFRESH_SECRET!, {
-    expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as any,
-  });
+    expiresIn: jwtRefreshExpiresIn,
+  } as jwt.SignOptions);
   return { accessToken, refreshToken };
 }
 
 // POST /api/auth/signup
-router.post('/signup', async (req: Request, res: Response) => {
+router.post('/signup', authLimiter, async (req: Request, res: Response) => {
   try {
-    const { username, email, password, displayName } = req.body;
+    const { username, email, password, displayName, dateOfBirth } = req.body;
 
     if (!username || !email || !password) {
       res.status(400).json({ error: 'Username, email, and password are required' });
       return;
     }
 
+    if (!EMAIL_REGEX.test(email)) {
+      res.status(400).json({ error: 'Invalid email address' });
+      return;
+    }
+
+    // Validate date of birth if provided
+    if (dateOfBirth) {
+      if (typeof dateOfBirth !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+        res.status(400).json({ error: 'Date of birth must be in YYYY-MM-DD format' });
+        return;
+      }
+      const age = calculateAge(dateOfBirth);
+      if (isNaN(age) || age < 16) {
+        res.status(400).json({ error: 'You must be at least 16 years old to use Pika' });
+        return;
+      }
+    }
+
     if (username.length < 3 || username.length > 30) {
       res.status(400).json({ error: 'Username must be between 3 and 30 characters' });
+      return;
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+      res.status(400).json({ error: 'Username may only contain letters, numbers, dots, hyphens, and underscores' });
       return;
     }
 
     if (password.length < 6) {
       res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return;
+    }
+    if (password.length > 72) {
+      res.status(400).json({ error: 'Password must be 72 characters or less' });
       return;
     }
 
@@ -51,10 +105,10 @@ router.post('/signup', async (req: Request, res: Response) => {
     const passwordHash = await bcrypt.hash(password, 12);
 
     const result = await query(
-      `INSERT INTO users (username, email, password_hash, display_name, email_verified)
-       VALUES ($1, $2, $3, $4, false)
-       RETURNING id, username, email, display_name, avatar_url, bio, language, email_verified, created_at`,
-      [username.toLowerCase(), email.toLowerCase(), passwordHash, displayName || username]
+      `INSERT INTO users (username, email, password_hash, display_name, date_of_birth, email_verified)
+       VALUES ($1, $2, $3, $4, $5, false)
+       RETURNING id, username, email, display_name, avatar_url, bio, language, email_verified, date_of_birth, created_at`,
+      [username.toLowerCase(), email.toLowerCase(), passwordHash, displayName || username, dateOfBirth || null]
     );
 
     const user = result.rows[0];
@@ -93,7 +147,7 @@ router.post('/signup', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/verify-email
-router.post('/verify-email', authenticate, async (req: AuthRequest, res: Response) => {
+router.post('/verify-email', authLimiter, authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { code } = req.body;
     if (!code) {
@@ -130,7 +184,7 @@ router.post('/verify-email', authenticate, async (req: AuthRequest, res: Respons
 });
 
 // POST /api/auth/resend-verification
-router.post('/resend-verification', authenticate, async (req: AuthRequest, res: Response) => {
+router.post('/resend-verification', authenticate, authLimiter, async (req: AuthRequest, res: Response) => {
   try {
     const userResult = await query('SELECT email, email_verified FROM users WHERE id = $1', [req.userId]);
     const user = userResult.rows[0];
@@ -172,7 +226,7 @@ router.post('/resend-verification', authenticate, async (req: AuthRequest, res: 
 });
 
 // POST /api/auth/forgot-password
-router.post('/forgot-password', async (req: Request, res: Response) => {
+router.post('/forgot-password', authLimiter, async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -221,7 +275,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/reset-password
-router.post('/reset-password', async (req: Request, res: Response) => {
+router.post('/reset-password', authLimiter, async (req: Request, res: Response) => {
   try {
     const { email, code, newPassword } = req.body;
 
@@ -230,23 +284,38 @@ router.post('/reset-password', async (req: Request, res: Response) => {
       return;
     }
 
+    if (!EMAIL_REGEX.test(email)) {
+      res.status(400).json({ error: 'Invalid email address' });
+      return;
+    }
+
     if (newPassword.length < 6) {
       res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return;
+    }
+    if (newPassword.length > 72) {
+      res.status(400).json({ error: 'Password must be 72 characters or less' });
       return;
     }
 
     const userResult = await query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
     if (userResult.rows.length === 0) {
-      res.status(400).json({ error: 'Invalid reset code' });
+      // Same error message as invalid code to prevent email enumeration
+      res.status(400).json({ error: 'Invalid or expired reset code' });
       return;
     }
 
     const user = userResult.rows[0];
 
+    // Atomically mark code as used to prevent race conditions (concurrent requests)
     const codeResult = await query(
-      `SELECT * FROM password_reset_codes
-       WHERE user_id = $1 AND code = $2 AND expires_at > NOW() AND used = false
-       ORDER BY created_at DESC LIMIT 1`,
+      `UPDATE password_reset_codes SET used = true
+       WHERE id = (
+         SELECT id FROM password_reset_codes
+         WHERE user_id = $1 AND code = $2 AND expires_at > NOW() AND used = false
+         ORDER BY created_at DESC LIMIT 1
+       )
+       RETURNING id`,
       [user.id, code]
     );
 
@@ -257,7 +326,6 @@ router.post('/reset-password', async (req: Request, res: Response) => {
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
     await query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, user.id]);
-    await query('UPDATE password_reset_codes SET used = true WHERE id = $1', [codeResult.rows[0].id]);
     await query('DELETE FROM refresh_tokens WHERE user_id = $1', [user.id]);
 
     res.json({ message: 'Password reset successfully' });
@@ -268,7 +336,7 @@ router.post('/reset-password', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/login
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', authLimiter, async (req: Request, res: Response) => {
   try {
     const { login, password } = req.body;
 
@@ -320,7 +388,7 @@ router.post('/login', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/refresh
-router.post('/refresh', async (req: Request, res: Response) => {
+router.post('/refresh', authLimiter, async (req: Request, res: Response) => {
   try {
     const { refreshToken: token } = req.body;
 
@@ -337,9 +405,10 @@ router.post('/refresh', async (req: Request, res: Response) => {
       return;
     }
 
+    // Atomic DELETE-returning to prevent replay attacks (race condition)
     const stored = await query(
-      'SELECT * FROM refresh_tokens WHERE token = $1 AND expires_at > NOW()',
-      [token]
+      'DELETE FROM refresh_tokens WHERE token = $1 AND user_id = $2 AND expires_at > NOW() RETURNING id',
+      [token, decoded.userId]
     );
 
     if (stored.rows.length === 0) {
@@ -347,7 +416,12 @@ router.post('/refresh', async (req: Request, res: Response) => {
       return;
     }
 
-    await query('DELETE FROM refresh_tokens WHERE token = $1', [token]);
+    // Verify user still exists (handles deleted accounts)
+    const userExists = await query('SELECT id FROM users WHERE id = $1', [decoded.userId]);
+    if (userExists.rows.length === 0) {
+      res.status(401).json({ error: 'Invalid refresh token' });
+      return;
+    }
 
     const { accessToken, refreshToken } = generateTokens(decoded.userId);
 
@@ -370,7 +444,8 @@ router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => 
     const { refreshToken: token } = req.body;
 
     if (token) {
-      await query('DELETE FROM refresh_tokens WHERE token = $1', [token]);
+      // Only delete token if it belongs to the authenticated user
+      await query('DELETE FROM refresh_tokens WHERE token = $1 AND user_id = $2', [token, req.userId]);
     }
 
     await query('UPDATE users SET is_online = false WHERE id = $1', [req.userId]);

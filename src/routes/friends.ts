@@ -1,17 +1,39 @@
 import { Router, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { query } from '../config/database';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { sendFriendRequestPush } from '../services/pushService';
+import { isValidUUID } from '../utils/validation';
 
 const router = Router();
 
+const friendRequestLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // 10 friend requests per minute
+  message: { error: 'Too many requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // POST /api/friends/request/:userId - Send friend request
-router.post('/request/:userId', authenticate, async (req: AuthRequest, res: Response) => {
+router.post('/request/:userId', authenticate, friendRequestLimiter, async (req: AuthRequest, res: Response) => {
   try {
     const targetId = req.params.userId;
 
+    if (!isValidUUID(targetId)) {
+      res.status(400).json({ error: 'Invalid user ID format' });
+      return;
+    }
+
     if (targetId === req.userId) {
       res.status(400).json({ error: 'Cannot send friend request to yourself' });
+      return;
+    }
+
+    // Verify target user exists
+    const targetUser = await query('SELECT id FROM users WHERE id = $1', [targetId]);
+    if (targetUser.rows.length === 0) {
+      res.status(404).json({ error: 'User not found' });
       return;
     }
 
@@ -24,12 +46,8 @@ router.post('/request/:userId', authenticate, async (req: AuthRequest, res: Resp
     );
 
     if (existing.rows.length > 0) {
-      const friendship = existing.rows[0];
-      if (friendship.status === 'blocked') {
-        res.status(403).json({ error: 'Cannot send request' });
-        return;
-      }
-      res.status(409).json({ error: 'Friend request already exists' });
+      // Uniform response to prevent leaking block status
+      res.status(409).json({ error: 'Cannot send friend request to this user' });
       return;
     }
 
@@ -56,6 +74,11 @@ router.post('/request/:userId', authenticate, async (req: AuthRequest, res: Resp
 // PUT /api/friends/accept/:userId - Accept friend request
 router.put('/accept/:userId', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    if (!isValidUUID(req.params.userId)) {
+      res.status(400).json({ error: 'Invalid user ID format' });
+      return;
+    }
+
     const result = await query(
       `UPDATE friendships SET status = 'accepted'
        WHERE requester_id = $1 AND addressee_id = $2 AND status = 'pending'
@@ -78,6 +101,11 @@ router.put('/accept/:userId', authenticate, async (req: AuthRequest, res: Respon
 // PUT /api/friends/reject/:userId - Reject friend request
 router.put('/reject/:userId', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    if (!isValidUUID(req.params.userId)) {
+      res.status(400).json({ error: 'Invalid user ID format' });
+      return;
+    }
+
     const result = await query(
       `DELETE FROM friendships
        WHERE requester_id = $1 AND addressee_id = $2 AND status = 'pending'
@@ -100,6 +128,11 @@ router.put('/reject/:userId', authenticate, async (req: AuthRequest, res: Respon
 // DELETE /api/friends/:userId - Remove friend
 router.delete('/:userId', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    if (!isValidUUID(req.params.userId)) {
+      res.status(400).json({ error: 'Invalid user ID format' });
+      return;
+    }
+
     const result = await query(
       `DELETE FROM friendships
        WHERE ((requester_id = $1 AND addressee_id = $2)
@@ -117,6 +150,85 @@ router.delete('/:userId', authenticate, async (req: AuthRequest, res: Response) 
     res.json({ message: 'Friend removed' });
   } catch (err) {
     console.error('Remove friend error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/friends/block/:userId - Block a user
+router.post('/block/:userId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!isValidUUID(req.params.userId)) {
+      res.status(400).json({ error: 'Invalid user ID format' });
+      return;
+    }
+    if (req.params.userId === req.userId) {
+      res.status(400).json({ error: 'Cannot block yourself' });
+      return;
+    }
+
+    // Verify target user exists
+    const targetUser = await query('SELECT id FROM users WHERE id = $1', [req.params.userId]);
+    if (targetUser.rows.length === 0) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    // Check for existing friendship
+    const existing = await query(
+      `SELECT id, status FROM friendships
+       WHERE (requester_id = $1 AND addressee_id = $2)
+          OR (requester_id = $2 AND addressee_id = $1)`,
+      [req.userId, req.params.userId]
+    );
+
+    if (existing.rows.length > 0) {
+      if (existing.rows[0].status === 'blocked') {
+        res.json({ message: 'User already blocked' });
+        return;
+      }
+      // Update existing friendship to blocked (requester = blocker)
+      await query(
+        `UPDATE friendships SET status = 'blocked', requester_id = $1, addressee_id = $2
+         WHERE id = $3`,
+        [req.userId, req.params.userId, existing.rows[0].id]
+      );
+    } else {
+      await query(
+        `INSERT INTO friendships (requester_id, addressee_id, status) VALUES ($1, $2, 'blocked')`,
+        [req.userId, req.params.userId]
+      );
+    }
+
+    res.json({ message: 'User blocked' });
+  } catch (err) {
+    console.error('Block user error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/friends/block/:userId - Unblock a user
+router.delete('/block/:userId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!isValidUUID(req.params.userId)) {
+      res.status(400).json({ error: 'Invalid user ID format' });
+      return;
+    }
+
+    const result = await query(
+      `DELETE FROM friendships
+       WHERE requester_id = $1 AND addressee_id = $2 AND status = 'blocked'
+       RETURNING id`,
+      [req.userId, req.params.userId]
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Block not found' });
+      return;
+    }
+
+    res.json({ message: 'User unblocked' });
+  } catch (err) {
+    console.error('Unblock user error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -144,9 +256,9 @@ router.get('/suggestions', authenticate, async (req: AuthRequest, res: Response)
          WHERE f2.status = 'accepted'
         ) as mutual_count,
         CASE WHEN u.last_location_lat IS NOT NULL AND $2::double precision IS NOT NULL
-          THEN (6371000 * acos(LEAST(1.0, cos(radians($2::double precision)) * cos(radians(u.last_location_lat)) *
+          THEN ROUND((6371000 * acos(LEAST(1.0, cos(radians($2::double precision)) * cos(radians(u.last_location_lat)) *
           cos(radians(u.last_location_lng) - radians($3::double precision)) + sin(radians($2::double precision)) *
-          sin(radians(u.last_location_lat)))))
+          sin(radians(u.last_location_lat))))) / 100) * 100
         END as distance
       FROM users u
       WHERE u.id != $1
@@ -196,7 +308,8 @@ router.get('/requests', authenticate, async (req: AuthRequest, res: Response) =>
        FROM friendships f
        JOIN users u ON f.requester_id = u.id
        WHERE f.addressee_id = $1 AND f.status = 'pending'
-       ORDER BY f.created_at DESC`,
+       ORDER BY f.created_at DESC
+       LIMIT 50`,
       [req.userId]
     );
 

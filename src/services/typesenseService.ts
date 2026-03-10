@@ -194,7 +194,9 @@ export async function searchVenues(params: SearchParams) {
   // Build filter_by dynamically
   const filters: string[] = [];
   if (city) {
-    filters.push(`city:=${city}`);
+    // Escape backticks to prevent Typesense filter injection
+    const safeCity = city.replace(/`/g, '\\`');
+    filters.push(`city:=\`${safeCity}\``);
   }
   if (lat !== undefined && lng !== undefined && radiusKm) {
     filters.push(`location:(${lat}, ${lng}, ${radiusKm} km)`);
