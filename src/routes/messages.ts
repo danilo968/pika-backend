@@ -149,7 +149,7 @@ router.get('/:id/messages', authenticate, async (req: AuthRequest, res: Response
       JOIN users u ON m.sender_id = u.id
       WHERE m.conversation_id = $1
     `;
-    const params: any[] = [req.params.id];
+    const params: unknown[] = [req.params.id];
 
     if (before) {
       if (typeof before !== 'string') {
@@ -172,8 +172,8 @@ router.get('/:id/messages', authenticate, async (req: AuthRequest, res: Response
 
     // Mark only the fetched messages as read (not all messages in conversation)
     const unreadIds = result.rows
-      .filter((m: any) => m.sender_id !== req.userId && m.read_at === null)
-      .map((m: any) => m.id);
+      .filter((m: { sender_id: string; read_at: string | null }) => m.sender_id !== req.userId && m.read_at === null)
+      .map((m: { id: string }) => m.id);
 
     if (unreadIds.length > 0) {
       await query(

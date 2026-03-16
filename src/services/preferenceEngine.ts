@@ -139,7 +139,7 @@ export async function recomputePreferences(userId: string): Promise<void> {
   ]);
 
   // Normalize weights to 0-1 range relative to max
-  const normalizeWeights = (rows: any[]) => {
+  const normalizeWeights = (rows: { val: string; total_weight: string }[]) => {
     if (rows.length === 0) return [];
     const parsed = rows.map(r => ({ val: r.val, w: parseFloat(r.total_weight) }))
       .filter(r => Number.isFinite(r.w));

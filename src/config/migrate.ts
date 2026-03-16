@@ -38,8 +38,9 @@ async function migrate() {
         try {
           await client.query(match[0]);
           console.log(`  Extension "${match[1]}" ready.`);
-        } catch (extErr: any) {
-          console.warn(`  ⚠️ Extension "${match[1]}" could not be created (may already exist or need manual install): ${extErr.message}`);
+        } catch (extErr: unknown) {
+          const msg = extErr instanceof Error ? extErr.message : String(extErr);
+          console.warn(`  ⚠️ Extension "${match[1]}" could not be created (may already exist or need manual install): ${msg}`);
         }
       }
       // Remove extension lines from the migration SQL (already handled above)

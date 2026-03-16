@@ -7,7 +7,7 @@ const expo = new Expo();
 export interface PushPayload {
   title: string;
   body: string;
-  data?: Record<string, any>;
+  data?: Record<string, unknown>;
   channelId?: string;
 }
 
@@ -17,7 +17,7 @@ async function getUserTokens(userId: string): Promise<string[]> {
     'SELECT token FROM push_tokens WHERE user_id = $1 AND is_active = true',
     [userId]
   );
-  return result.rows.map((r: any) => r.token);
+  return result.rows.map((r: { token: string }) => r.token);
 }
 
 // ─── Send Push Notification to a User ───
@@ -50,7 +50,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
           if (ticket.details?.error === 'DeviceNotRegistered') {
             await query(
               'UPDATE push_tokens SET is_active = false WHERE token = $1',
-              [(chunk[i] as any).to]
+              [(chunk[i] as { to?: string }).to]
             );
           }
           console.error('Push notification error:', ticket.message);

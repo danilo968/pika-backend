@@ -1,6 +1,37 @@
 import { Router, Request, Response } from 'express';
 import { optionalAuthenticate } from '../middleware/auth';
 
+interface MapboxManeuver {
+  type: string;
+  modifier?: string;
+  location: number[];
+  instruction?: string;
+}
+
+interface MapboxStep {
+  maneuver: MapboxManeuver;
+  name?: string;
+  distance: number;
+  duration: number;
+}
+
+interface MapboxLeg {
+  steps?: MapboxStep[];
+  summary?: string;
+}
+
+interface MapboxRoute {
+  distance: number;
+  duration: number;
+  geometry?: { coordinates?: number[][] };
+  legs?: MapboxLeg[];
+}
+
+interface MapboxResponse {
+  code?: string;
+  routes?: MapboxRoute[];
+}
+
 const router = Router();
 
 const MAPBOX_BASE = 'https://api.mapbox.com/directions/v5/mapbox';
@@ -53,9 +84,9 @@ router.get('/route', optionalAuthenticate, async (req: Request, res: Response) =
     let response: globalThis.Response;
     try {
       response = await fetch(url, { signal: controller.signal });
-    } catch (fetchErr: any) {
+    } catch (fetchErr: unknown) {
       clearTimeout(timeout);
-      if (fetchErr.name === 'AbortError') {
+      if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
         return res.status(504).json({ error: 'Navigation service timed out. Please try again.' });
       }
       throw fetchErr;
@@ -64,7 +95,7 @@ router.get('/route', optionalAuthenticate, async (req: Request, res: Response) =
     if (!response.ok) {
       return res.status(502).json({ error: 'Navigation service error' });
     }
-    const data: any = await response.json();
+    const data = await response.json() as MapboxResponse;
 
     if (!data.routes || data.routes.length === 0) {
       return res.status(404).json({ error: 'No route found' });
@@ -80,7 +111,7 @@ router.get('/route', optionalAuthenticate, async (req: Request, res: Response) =
       distance: route.distance,
       duration: route.duration,
       geometry: route.geometry?.coordinates?.map((c: number[]) => [c[1], c[0]]) || [], // [lng,lat] -> [lat,lng]
-      steps: (legs.steps || []).map((step: any) => ({
+      steps: (legs.steps || []).map((step: MapboxStep) => ({
         instruction: step.maneuver.instruction || '',
         distance: step.distance,
         duration: step.duration,
@@ -89,9 +120,9 @@ router.get('/route', optionalAuthenticate, async (req: Request, res: Response) =
       })),
       summary: legs.summary || '',
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Log only the error message (not full error object) to avoid leaking Mapbox token in URLs
-    console.error('Navigation route error:', err.message || 'Unknown error');
+    console.error('Navigation route error:', err instanceof Error ? err.message : 'Unknown error');
     res.status(500).json({ error: 'Failed to calculate route' });
   }
 });

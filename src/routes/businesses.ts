@@ -145,7 +145,7 @@ router.put('/:id', authenticate, businessLimiter, async (req: AuthRequest, res: 
     // Build SET clause dynamically — only update fields explicitly provided in the body
     // This allows setting fields to null (unlike COALESCE which preserves the old value)
     const setClauses: string[] = [];
-    const params: any[] = [req.params.id, req.userId];
+    const params: unknown[] = [req.params.id, req.userId];
 
     if ('business_name' in req.body) {
       params.push(business_name);
@@ -313,7 +313,7 @@ router.post('/:id/menu', authenticate, businessLimiter, async (req: AuthRequest,
 
         if (section.items && Array.isArray(section.items) && section.items.length > 0) {
           // Batch INSERT all items in ONE query (eliminates N queries per section)
-          const values: any[] = [];
+          const values: unknown[] = [];
           const placeholders: string[] = [];
           let paramIdx = 1;
 

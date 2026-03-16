@@ -186,7 +186,7 @@ router.put('/me', authenticate, profileUpdateLimiter, async (req: AuthRequest, r
 
     // Build SET clause dynamically — allows clearing fields by sending null
     const setClauses: string[] = [];
-    const params: any[] = [req.userId];
+    const params: unknown[] = [req.userId];
 
     if ('displayName' in req.body) {
       params.push(displayName ?? null);

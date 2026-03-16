@@ -145,7 +145,7 @@ router.get('/search', optionalAuthenticate, async (req: AuthRequest, res: Respon
         AND (v.name ILIKE $2 OR v.city ILIKE $2 OR v.cuisine ILIKE $2)
     `;
 
-    const params: any[] = [q as string, `%${escapeILIKE(q as string)}%`];
+    const params: unknown[] =[q as string, `%${escapeILIKE(q as string)}%`];
 
     if (city) {
       if ((city as string).length > 100) {
@@ -197,7 +197,7 @@ router.get('/trending', optionalAuthenticate, async (req: AuthRequest, res: Resp
         ) as trending_score
     `;
 
-    const params: any[] = [];
+    const params: unknown[] =[];
 
     // Add distance if lat/lng provided
     if (lat && lng) {
@@ -272,7 +272,7 @@ router.get('/', optionalAuthenticate, async (req: AuthRequest, res: Response) =>
     }
 
     const pageNum = Math.min(Math.max(1, parseInt((page as string) || '1', 10) || 1), 10000);
-    const limitNum = Math.min(Math.max(1, parseInt((limit as string) || '200', 10) || 200), 200);
+    const limitNum = Math.min(Math.max(1, parseInt((limit as string) || '500', 10) || 500), 500);
     const offset = (pageNum - 1) * limitNum;
 
     // Use LEFT JOIN with pre-aggregated story stats (eliminates correlated subquery per row)
@@ -301,7 +301,7 @@ router.get('/', optionalAuthenticate, async (req: AuthRequest, res: Response) =>
         AND ST_DWithin(v.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
     `;
 
-    const params: any[] = [longitude, latitude, searchRadius];
+    const params: unknown[] =[longitude, latitude, searchRadius];
 
     if (category) {
       if (typeof category !== 'string' || (category as string).length > 50) {
@@ -427,7 +427,7 @@ router.get('/personalized', authenticate, async (req: AuthRequest, res: Response
         AND ST_DWithin(v.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
     `;
 
-    const params: any[] = [longitude, latitude, searchRadius];
+    const params: unknown[] =[longitude, latitude, searchRadius];
 
     if (category) {
       if (typeof category !== 'string' || (category as string).length > 50) {
@@ -497,7 +497,7 @@ router.get('/recommended', authenticate, async (req: AuthRequest, res: Response)
     // 2. Find other users who also rated those venues 4+
     // 3. Find OTHER venues those users liked that I haven't visited
     // 4. Rank by how many similar users liked it
-    const params: any[] = [req.userId];
+    const params: unknown[] =[req.userId];
     let distSelect = '';
     let distWhere = '';
 
@@ -566,7 +566,7 @@ router.get('/friend-picks', authenticate, async (req: AuthRequest, res: Response
     const { lat, lng, limit: limitQ } = req.query;
     const limitNum = Math.min(parseInt((limitQ as string) || '10', 10) || 10, 20);
 
-    const params: any[] = [req.userId];
+    const params: unknown[] =[req.userId];
     let distSelect = '';
     let distWhere = '';
 
@@ -632,7 +632,7 @@ router.get('/trending/personalized', authenticate, async (req: AuthRequest, res:
     const prefCategories: Array<{ value: string; weight: number }> =
       prefResult.rows[0]?.preferred_categories || [];
 
-    const params: any[] = [];
+    const params: unknown[] =[];
 
     // Build the category boost SQL fragment
     let categoryBoostParts: string[] = [];
@@ -957,9 +957,9 @@ router.get('/:id/menu', optionalAuthenticate, async (req: AuthRequest, res: Resp
         [venueId]
       );
 
-      const menu = sections.rows.map((section: any) => ({
+      const menu = sections.rows.map((section: { id: string; name: string; description: string | null }) => ({
         ...section,
-        items: items.rows.filter((item: any) => item.section_id === section.id),
+        items: items.rows.filter((item: { section_id: string }) => item.section_id === section.id),
       }));
 
       res.json(menu);

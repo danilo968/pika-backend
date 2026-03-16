@@ -1,12 +1,20 @@
 import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
-import jwt from 'jsonwebtoken';
+import { supabaseAdmin } from '../config/supabase';
 import { query } from '../config/database';
 import { sendNewMessagePush } from '../services/pushService';
 import { isValidUUID } from '../utils/validation';
 
+interface SenderInfo {
+  id?: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
 interface AuthSocket extends Socket {
   userId?: string;
+  _senderInfo?: SenderInfo;
 }
 
 export function setupSocket(httpServer: HttpServer) {
@@ -31,19 +39,19 @@ export function setupSocket(httpServer: HttpServer) {
     },
   });
 
-  // Authentication middleware
-  io.use((socket: AuthSocket, next) => {
+  // Authentication middleware — validates Supabase JWT
+  io.use(async (socket: AuthSocket, next) => {
     const token = socket.handshake.auth.token;
     if (!token) {
       return next(new Error('Authentication required'));
     }
 
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId?: unknown };
-      if (!decoded.userId || typeof decoded.userId !== 'string') {
-        return next(new Error('Invalid token payload'));
+      const { data, error } = await supabaseAdmin.auth.getUser(token);
+      if (error || !data.user) {
+        return next(new Error('Invalid token'));
       }
-      socket.userId = decoded.userId;
+      socket.userId = data.user.id;
       next();
     } catch {
       next(new Error('Invalid token'));
@@ -160,7 +168,7 @@ export function setupSocket(httpServer: HttpServer) {
         }
 
         // Cache sender info on socket (only fetch once per connection)
-        if (!(socket as any)._senderInfo) {
+        if (!(socket as AuthSocket)._senderInfo) {
           const senderResult = await query(
             'SELECT username, display_name, avatar_url FROM users WHERE id = $1',
             [userId]
@@ -169,7 +177,7 @@ export function setupSocket(httpServer: HttpServer) {
             socket.emit('error', { message: 'Sender account not found' });
             return;
           }
-          (socket as any)._senderInfo = senderResult.rows[0];
+          (socket as AuthSocket)._senderInfo = senderResult.rows[0];
         }
 
         // Insert message + get participants in parallel
@@ -187,7 +195,7 @@ export function setupSocket(httpServer: HttpServer) {
         ]);
 
         const message = result.rows[0];
-        const senderInfo = (socket as any)._senderInfo || {};
+        const senderInfo = (socket as AuthSocket)._senderInfo || {};
         const fullMessage = { ...message, ...senderInfo };
 
         for (const p of participants.rows) {
@@ -195,7 +203,7 @@ export function setupSocket(httpServer: HttpServer) {
 
           // Send push notification if recipient is offline
           if (p.user_id !== userId && !onlineUsers.has(p.user_id)) {
-            const senderInfo = (socket as any)._senderInfo;
+            const senderInfo = (socket as AuthSocket)._senderInfo;
             const senderName = senderInfo?.display_name || senderInfo?.username || 'Someone';
             sendNewMessagePush(
               p.user_id,

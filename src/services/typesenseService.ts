@@ -41,8 +41,8 @@ export async function ensureCollection(): Promise<void> {
   try {
     await client.collections(COLLECTION_NAME).retrieve();
     console.log('✅ Typesense: venues collection ready');
-  } catch (err: any) {
-    if (err?.httpStatus === 404) {
+  } catch (err: unknown) {
+    if ((err as { httpStatus?: number })?.httpStatus === 404) {
       await client.collections().create(venueSchema);
       console.log('✅ Typesense: venues collection created');
     } else {
@@ -89,7 +89,26 @@ export async function deleteVenue(venueId: string): Promise<void> {
 }
 
 // ─── Build document from a DB row ───
-function rowToDocument(row: any): VenueDocument {
+interface VenueRow {
+  id: string;
+  name: string;
+  description?: string;
+  city?: string;
+  cuisine?: string;
+  category_name?: string;
+  category_slug?: string;
+  price_level?: string;
+  ku_rating_avg?: string;
+  ku_rating_count?: string;
+  is_verified?: boolean;
+  is_featured?: boolean;
+  cover_image_url?: string;
+  address?: string;
+  latitude?: string;
+  longitude?: string;
+}
+
+function rowToDocument(row: VenueRow): VenueDocument {
   const doc: VenueDocument = {
     id: row.id,
     name: row.name || '',
@@ -141,15 +160,15 @@ export async function bulkIndexVenues(): Promise<number> {
       .documents()
       .import(documents, { action: 'upsert' });
 
-    const successCount = importResult.filter((r: any) => r.success).length;
-    const failCount = importResult.filter((r: any) => !r.success).length;
+    const successCount = importResult.filter((r: { success: boolean }) => r.success).length;
+    const failCount = importResult.filter((r: { success: boolean }) => !r.success).length;
 
     if (failCount > 0) {
       console.warn(`Typesense bulk index: ${successCount} ok, ${failCount} failed`);
       importResult
-        .filter((r: any) => !r.success)
+        .filter((r: { success: boolean }) => !r.success)
         .slice(0, 5)
-        .forEach((r: any) => console.warn('  Failed:', r.error));
+        .forEach((r: { success: boolean; error?: string }) => console.warn('  Failed:', r.error));
     }
 
     return successCount;
@@ -202,7 +221,7 @@ export async function searchVenues(params: SearchParams) {
     filters.push(`location:(${lat}, ${lng}, ${radiusKm} km)`);
   }
 
-  const searchParams: Record<string, any> = {
+  const searchParams: Record<string, unknown> = {
     q,
     query_by: 'name,cuisine,city,category_name',
     sort_by: '_text_match:desc,ku_rating_count:desc',
@@ -222,8 +241,8 @@ export async function searchVenues(params: SearchParams) {
     .search(searchParams);
 
   // Map Typesense hits back to the venue response shape the mobile app expects
-  return (result.hits || []).map((hit: any) => {
-    const doc = hit.document;
+  return (result.hits || []).map((hit) => {
+    const doc = hit.document as Record<string, unknown>;
     return {
       id: doc.id,
       name: doc.name,
@@ -239,8 +258,8 @@ export async function searchVenues(params: SearchParams) {
       ku_rating_count: doc.ku_rating_count || 0,
       category_slug: doc.category_slug || null,
       category_name: doc.category_name || null,
-      latitude: doc.location ? doc.location[0] : null,
-      longitude: doc.location ? doc.location[1] : null,
+      latitude: Array.isArray(doc.location) ? doc.location[0] : null,
+      longitude: Array.isArray(doc.location) ? doc.location[1] : null,
       // Typesense relevance score
       relevance: hit.text_match || 0,
     };

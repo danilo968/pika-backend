@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const isProduction = process.env.NODE_ENV === 'production';
+const isSupabase = (process.env.DATABASE_URL || '').includes('supabase.co');
 
 if (!process.env.DATABASE_URL) {
   console.error('❌ FATAL: DATABASE_URL environment variable is not set.');
@@ -12,8 +13,8 @@ if (!process.env.DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Render (and most cloud providers) require SSL for external DB connections
-  ssl: isProduction ? { rejectUnauthorized: false } : false,
+  // Supabase and cloud providers require SSL for external DB connections
+  ssl: (isProduction || isSupabase) ? { rejectUnauthorized: false } : false,
   max: 20,                        // Max concurrent connections
   idleTimeoutMillis: 30000,       // Close idle connections after 30s
   connectionTimeoutMillis: 5000,  // Timeout new connection attempts after 5s
@@ -37,14 +38,15 @@ const RETRYABLE_CODES = new Set([
 ]);
 
 /** Query with automatic retry for transient connection failures (max 2 retries, exponential backoff) */
-export async function query(text: string, params?: any[]): Promise<QueryResult> {
+export async function query(text: string, params?: unknown[]): Promise<QueryResult> {
   const MAX_RETRIES = 2;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       return await pool.query(text, params);
-    } catch (err: any) {
-      const code = err.code || err.message;
-      const isRetryable = RETRYABLE_CODES.has(code) || /connection terminated|Connection terminated/.test(err.message || '');
+    } catch (err: unknown) {
+      const errObj = err as { code?: string; message?: string };
+      const code = errObj.code || errObj.message || '';
+      const isRetryable = RETRYABLE_CODES.has(code) || /connection terminated|Connection terminated/.test(errObj.message || '');
       if (!isRetryable || attempt === MAX_RETRIES) throw err;
       const delay = Math.min(100 * Math.pow(2, attempt), 1000);
       await new Promise((r) => setTimeout(r, delay));

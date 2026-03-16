@@ -16,6 +16,7 @@ import navigationRoutes from './routes/navigation';
 import supportRoutes from './routes/support';
 import notificationRoutes from './routes/notifications';
 import interactionRoutes from './routes/interactions';
+import adminRoutes from './routes/admin';
 
 dotenv.config();
 
@@ -76,5 +77,6 @@ app.use('/api/navigation', navigationRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/interactions', interactionRoutes);
+app.use('/api/admin', adminRoutes);
 
 export default app;
