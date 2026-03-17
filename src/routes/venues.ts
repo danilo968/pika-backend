@@ -252,6 +252,93 @@ router.get('/trending', optionalAuthenticate, async (req: AuthRequest, res: Resp
   }
 });
 
+// GET /api/venues/top-of-week?lat=X&lng=Y - Top place of the week
+router.get('/top-of-week', async (req: AuthRequest, res: Response) => {
+  try {
+    const { lat, lng } = req.query;
+    const params: unknown[] = [];
+    let locationFilter = '';
+
+    if (lat && lng) {
+      const latitude = parseFloat(lat as string);
+      const longitude = parseFloat(lng as string);
+      params.push(longitude, latitude);
+      locationFilter = `AND ST_DWithin(v.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, 50000)`;
+    }
+
+    const result = await query(`
+      SELECT v.id, v.name, v.description, v.cover_image_url, v.city, v.is_verified, v.is_featured,
+        v.ku_rating_avg, v.ku_rating_count, v.google_rating, v.google_rating_count,
+        v.business_tier, v.cuisine,
+        ST_Y(v.location::geometry) as latitude, ST_X(v.location::geometry) as longitude,
+        vc.slug as category_slug, vc.name as category_name,
+        COALESCE(ss.weekly_story_count, 0)::integer AS weekly_story_count,
+        COALESCE(ss.weekly_views, 0)::integer AS weekly_views
+      FROM venues v
+      LEFT JOIN venue_categories vc ON v.category_id = vc.id
+      LEFT JOIN (
+        SELECT venue_id, COUNT(*) as weekly_story_count, COALESCE(SUM(view_count), 0) as weekly_views
+        FROM stories WHERE status = 'approved' AND created_at > NOW() - INTERVAL '7 days'
+        GROUP BY venue_id
+      ) ss ON ss.venue_id = v.id
+      WHERE v.is_active = true
+        AND (v.ku_rating_count > 0 OR v.last_story_at > NOW() - INTERVAL '7 days')
+        ${locationFilter}
+      ORDER BY (
+        COALESCE(ss.weekly_story_count, 0) * 5 + COALESCE(ss.weekly_views, 0) * 0.5 +
+        COALESCE(v.ku_rating_count, 0) * 3 + COALESCE(v.ku_rating_avg, 0) * 2
+      ) DESC
+      LIMIT 1
+    `, params);
+
+    res.json(result.rows[0] || null);
+  } catch (err) {
+    console.error('Get top venue of week error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/venues/featured?lat=X&lng=Y - Featured/promoted venues (paid placements)
+router.get('/featured', async (req: AuthRequest, res: Response) => {
+  try {
+    const { lat, lng, limit } = req.query;
+    const limitNum = Math.min(Math.max(1, parseInt((limit as string) || '5', 10) || 5), 10);
+
+    let sql = `
+      SELECT v.id, v.name, v.description, v.address, v.city, v.cuisine,
+        v.price_level, v.cover_image_url, v.is_verified, v.is_featured,
+        v.ku_rating_avg, v.ku_rating_count,
+        v.google_rating, v.google_rating_count,
+        v.business_tier,
+        ST_Y(v.location::geometry) as latitude, ST_X(v.location::geometry) as longitude,
+        vc.slug as category_slug, vc.name as category_name
+      FROM venues v
+      LEFT JOIN venue_categories vc ON v.category_id = vc.id
+      WHERE v.is_active = true AND (v.is_featured = true OR v.business_tier IN ('plus', 'pro'))
+    `;
+    const params: unknown[] = [];
+
+    if (lat && lng) {
+      const latitude = parseFloat(lat as string);
+      const longitude = parseFloat(lng as string);
+      params.push(longitude, latitude);
+      sql += ` AND ST_DWithin(v.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, 50000)`;
+      sql += ` ORDER BY CASE WHEN v.business_tier = 'pro' THEN 1 WHEN v.business_tier = 'plus' THEN 2 ELSE 3 END, v.ku_rating_avg DESC NULLS LAST`;
+    } else {
+      sql += ` ORDER BY CASE WHEN v.business_tier = 'pro' THEN 1 WHEN v.business_tier = 'plus' THEN 2 ELSE 3 END, v.ku_rating_avg DESC NULLS LAST`;
+    }
+
+    params.push(limitNum);
+    sql += ` LIMIT $${params.length}`;
+
+    const result = await query(sql, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Get featured venues error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/venues?lat=X&lng=Y&radius=Z&category=slug&companion=tag&occasion=tag - Nearby venues
 router.get('/', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
   try {
@@ -708,6 +795,82 @@ router.get('/trending/personalized', authenticate, async (req: AuthRequest, res:
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// GET /api/venues/explore/live — Live feed: venues with active stories + vibes nearby
+router.get('/explore/live', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { lat, lng, radius, vibe } = req.query;
+
+    if (!lat || !lng) {
+      res.status(400).json({ error: 'lat and lng query parameters are required' });
+      return;
+    }
+
+    const latitude = parseFloat(lat as string);
+    const longitude = parseFloat(lng as string);
+    const searchRadius = Math.min(parseFloat((radius as string) || '5000'), 50000);
+
+    if (isNaN(latitude) || isNaN(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+      res.status(400).json({ error: 'Invalid location parameters' });
+      return;
+    }
+
+    // Auto-approve pending stories past their window
+    await query(
+      `UPDATE stories SET status = 'approved'
+       WHERE status = 'pending' AND auto_approve_at IS NOT NULL AND auto_approve_at <= NOW()
+         AND expires_at > NOW()`
+    );
+
+    // Build vibe filter
+    let vibeFilter = '';
+    const params: any[] = [longitude, latitude, searchRadius];
+    if (vibe && typeof vibe === 'string' && VALID_VIBES.includes(vibe)) {
+      params.push(vibe);
+      vibeFilter = `AND $${params.length} = ANY(v.current_vibes)`;
+    }
+
+    const result = await query(
+      `SELECT v.id, v.name, v.category_slug, v.category_name, v.category_icon,
+         v.cover_image_url, v.ku_rating_avg, v.ku_rating_count,
+         v.current_vibes, v.vibe_set_at,
+         v.active_story_count, v.last_story_at,
+         v.is_verified, v.is_featured, v.business_tier, v.price_level,
+         ST_Y(v.location::geometry) as latitude, ST_X(v.location::geometry) as longitude,
+         ST_Distance(v.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) as distance,
+         (SELECT json_agg(json_build_object(
+           'id', s.id, 'media_url', s.media_url, 'media_type', s.media_type,
+           'caption', s.caption, 'created_at', s.created_at,
+           'username', u.username, 'avatar_url', u.avatar_url
+         ) ORDER BY s.created_at DESC)
+          FROM stories s
+          JOIN users u ON s.user_id = u.id
+          WHERE s.venue_id = v.id AND s.status = 'approved' AND s.expires_at > NOW()
+          LIMIT 5
+         ) as recent_stories
+       FROM venues v
+       WHERE v.is_active = true
+         AND ST_DWithin(v.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+         AND (
+           v.active_story_count > 0
+           OR (v.current_vibes != '{}' AND v.vibe_set_at > NOW() - INTERVAL '18 hours')
+         )
+         ${vibeFilter}
+       ORDER BY v.active_story_count DESC, v.last_story_at DESC NULLS LAST
+       LIMIT 50`,
+      params
+    );
+
+    res.json({
+      venues: result.rows,
+      valid_vibes: VALID_VIBES,
+    });
+  } catch (err) {
+    console.error('Explore live error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 
 // GET /api/venues/:id - Full venue detail
 router.get('/:id', optionalAuthenticate, async (req: AuthRequest, res: Response) => {
@@ -1167,6 +1330,231 @@ router.post('/:id/content-submissions/:submissionId/reject', authenticate, async
     res.json({ message: 'Content rejected' });
   } catch (err) {
     console.error('Reject content error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/venues/:id/enrich — Enrich venue with Google Places data
+// Fetches additional details (photos, hours, phone, website) from
+// Google Places API and merges them into the venue record.
+// ─────────────────────────────────────────────────────────────
+router.post('/:id/enrich', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!isValidUUID(req.params.id)) {
+      res.status(400).json({ error: 'Invalid venue ID' });
+      return;
+    }
+
+    const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
+    if (!GOOGLE_PLACES_API_KEY) {
+      res.status(501).json({ error: 'Google Places API not configured' });
+      return;
+    }
+
+    // Get venue from DB
+    const venueResult = await query(
+      'SELECT id, name, latitude, longitude, google_place_id, address FROM venues WHERE id = $1',
+      [req.params.id]
+    );
+    if (venueResult.rows.length === 0) {
+      res.status(404).json({ error: 'Venue not found' });
+      return;
+    }
+
+    const venue = venueResult.rows[0];
+    let placeId = venue.google_place_id;
+
+    // Step 1: Find Google Place ID if we don't have one
+    if (!placeId) {
+      const searchUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(venue.name)}&inputtype=textquery&locationbias=point:${venue.latitude},${venue.longitude}&fields=place_id&key=${GOOGLE_PLACES_API_KEY}`;
+      const searchRes = await fetch(searchUrl);
+      const searchData = await searchRes.json() as any;
+      if (searchData.candidates?.length > 0) {
+        placeId = searchData.candidates[0].place_id;
+      }
+    }
+
+    if (!placeId) {
+      res.status(404).json({ error: 'Could not find matching Google Place' });
+      return;
+    }
+
+    // Step 2: Get Place Details
+    const fields = 'name,formatted_phone_number,website,opening_hours,photos,editorial_summary,price_level,rating,user_ratings_total,url';
+    const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=${fields}&key=${GOOGLE_PLACES_API_KEY}`;
+    const detailsRes = await fetch(detailsUrl);
+    const detailsData = await detailsRes.json() as any;
+
+    if (detailsData.status !== 'OK') {
+      res.status(502).json({ error: 'Google Places API error', status: detailsData.status });
+      return;
+    }
+
+    const place = detailsData.result;
+
+    // Step 3: Build photo URLs (first 5 photos)
+    const photoUrls: string[] = [];
+    if (place.photos?.length) {
+      for (const photo of place.photos.slice(0, 5)) {
+        photoUrls.push(
+          `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photo_reference=${photo.photo_reference}&key=${GOOGLE_PLACES_API_KEY}`
+        );
+      }
+    }
+
+    // Step 4: Update venue in DB
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramIdx = 1;
+
+    if (!venue.google_place_id) {
+      updates.push(`google_place_id = $${paramIdx++}`);
+      values.push(placeId);
+    }
+    if (place.formatted_phone_number) {
+      updates.push(`phone = $${paramIdx++}`);
+      values.push(place.formatted_phone_number);
+    }
+    if (place.website) {
+      updates.push(`website = $${paramIdx++}`);
+      values.push(place.website);
+    }
+    if (place.opening_hours?.weekday_text) {
+      updates.push(`opening_hours = $${paramIdx++}`);
+      values.push(JSON.stringify(place.opening_hours.weekday_text));
+    }
+    if (place.rating) {
+      updates.push(`google_rating = $${paramIdx++}`);
+      values.push(place.rating);
+    }
+    if (place.user_ratings_total) {
+      updates.push(`google_rating_count = $${paramIdx++}`);
+      values.push(place.user_ratings_total);
+    }
+    if (place.price_level != null) {
+      updates.push(`price_level = $${paramIdx++}`);
+      values.push(place.price_level);
+    }
+    if (place.editorial_summary?.overview) {
+      updates.push(`description = $${paramIdx++}`);
+      values.push(place.editorial_summary.overview);
+    }
+    if (place.url) {
+      updates.push(`google_maps_url = $${paramIdx++}`);
+      values.push(place.url);
+    }
+
+    if (updates.length > 0) {
+      updates.push(`updated_at = NOW()`);
+      values.push(req.params.id);
+      await query(
+        `UPDATE venues SET ${updates.join(', ')} WHERE id = $${paramIdx}`,
+        values
+      );
+    }
+
+    res.json({
+      enriched: true,
+      place_id: placeId,
+      phone: place.formatted_phone_number || null,
+      website: place.website || null,
+      opening_hours: place.opening_hours?.weekday_text || null,
+      google_rating: place.rating || null,
+      google_rating_count: place.user_ratings_total || null,
+      price_level: place.price_level ?? null,
+      description: place.editorial_summary?.overview || null,
+      photos: photoUrls,
+      google_maps_url: place.url || null,
+    });
+  } catch (err) {
+    console.error('Venue enrich error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── Venue Vibes ──
+
+const VALID_VIBES = [
+  'chill', 'relaxed', 'hyped', 'foody', 'romantic', 'cozy', 'live-music',
+  'packed', 'happy-hour', 'family', 'quiet', 'artsy', 'sporty', 'business',
+  'outdoor', 'late-night',
+];
+
+// PUT /api/venues/:id/vibes — Set the current vibe (venue owner only)
+router.put('/:id/vibes', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!isValidUUID(req.params.id)) {
+      res.status(400).json({ error: 'Invalid venue ID' });
+      return;
+    }
+
+    const { vibes } = req.body;
+    if (!Array.isArray(vibes)) {
+      res.status(400).json({ error: 'vibes must be an array of strings' });
+      return;
+    }
+    if (vibes.length > 4) {
+      res.status(400).json({ error: 'Max 4 vibes at a time' });
+      return;
+    }
+
+    const invalidVibes = vibes.filter((v: string) => !VALID_VIBES.includes(v));
+    if (invalidVibes.length > 0) {
+      res.status(400).json({ error: `Invalid vibes: ${invalidVibes.join(', ')}`, valid: VALID_VIBES });
+      return;
+    }
+
+    // Verify ownership
+    const ownerCheck = await query(
+      `SELECT id FROM business_profiles WHERE user_id = $1 AND venue_id = $2 AND status = 'approved'`,
+      [req.userId, req.params.id]
+    );
+    if (ownerCheck.rows.length === 0) {
+      res.status(403).json({ error: 'Not authorized — you must be the venue owner' });
+      return;
+    }
+
+    await query(
+      `UPDATE venues SET current_vibes = $1, vibe_set_at = NOW() WHERE id = $2`,
+      [vibes, req.params.id]
+    );
+
+    res.json({ vibes, set_at: new Date().toISOString() });
+  } catch (err) {
+    console.error('Set venue vibes error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/venues/:id/vibes — Get the current vibe
+router.get('/:id/vibes', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!isValidUUID(req.params.id)) {
+      res.status(400).json({ error: 'Invalid venue ID' });
+      return;
+    }
+
+    const result = await query(
+      `SELECT current_vibes, vibe_set_at FROM venues WHERE id = $1`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Venue not found' });
+      return;
+    }
+
+    const { current_vibes, vibe_set_at } = result.rows[0];
+
+    // Auto-expire vibes after 18 hours (venues should re-set daily)
+    if (vibe_set_at && Date.now() - new Date(vibe_set_at).getTime() > 18 * 60 * 60 * 1000) {
+      res.json({ vibes: [], set_at: null, expired: true });
+      return;
+    }
+
+    res.json({ vibes: current_vibes || [], set_at: vibe_set_at });
+  } catch (err) {
+    console.error('Get venue vibes error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

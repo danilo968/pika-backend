@@ -25,3 +25,5 @@ services:
         value: ./uploads
       - key: MAX_FILE_SIZE
         value: "10485760"
+      - key: GOOGLE_PLACES_API_KEY
+        value: AIzaSyDDEFLEA5jCPl-lcZItjijHYF3HajDkvGU
