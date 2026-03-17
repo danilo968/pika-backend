@@ -103,6 +103,95 @@ router.post('/sync-profile', authenticate, async (req: AuthRequest, res: Respons
   }
 });
 
+// POST /api/auth/register — full signup: creates Supabase user (auto-confirmed) + app profile
+router.post('/register', authLimiter, async (req: Request, res: Response) => {
+  try {
+    const { username, email, password, displayName, dateOfBirth } = req.body;
+
+    if (!username || !email || !password) {
+      res.status(400).json({ error: 'Username, email, and password are required' });
+      return;
+    }
+
+    if (username.length < 3 || username.length > 30) {
+      res.status(400).json({ error: 'Username must be between 3 and 30 characters' });
+      return;
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+      res.status(400).json({ error: 'Username may only contain letters, numbers, dots, hyphens, and underscores' });
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      res.status(400).json({ error: 'Invalid email address' });
+      return;
+    }
+
+    if (password.length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return;
+    }
+
+    // Validate age range if provided
+    const validAgeRanges = ['16-25', '26-35', '36-45+'];
+    if (dateOfBirth && !validAgeRanges.includes(dateOfBirth)) {
+      if (typeof dateOfBirth === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+        const age = calculateAge(dateOfBirth);
+        if (isNaN(age) || age < 16) {
+          res.status(400).json({ error: 'You must be at least 16 years old to use Pika' });
+          return;
+        }
+      } else {
+        res.status(400).json({ error: 'Invalid date of birth format' });
+        return;
+      }
+    }
+
+    // Check username uniqueness
+    const usernameTaken = await query('SELECT id FROM users WHERE username = $1', [username.toLowerCase()]);
+    if (usernameTaken.rows.length > 0) {
+      res.status(409).json({ error: 'Username already taken' });
+      return;
+    }
+
+    // Check email uniqueness
+    const emailTaken = await query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (emailTaken.rows.length > 0) {
+      res.status(409).json({ error: 'Email already registered' });
+      return;
+    }
+
+    // 1. Create Supabase auth user (auto-confirmed via admin API)
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email: email.toLowerCase(),
+      password,
+      email_confirm: true, // Auto-confirm — no email verification needed
+    });
+
+    if (authError) {
+      console.error('Supabase createUser error:', authError);
+      res.status(400).json({ error: authError.message });
+      return;
+    }
+
+    const supabaseUserId = authData.user.id;
+
+    // 2. Create app profile
+    const result = await query(
+      `INSERT INTO users (id, username, email, password_hash, display_name, date_of_birth, email_verified)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, username, email, display_name, avatar_url, bio, language, email_verified, date_of_birth, created_at`,
+      [supabaseUserId, username.toLowerCase(), email.toLowerCase(), 'supabase-managed', displayName || username, dateOfBirth || null, true]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('Register error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/auth/lookup?username=xxx — resolve username to email for Supabase login
 router.get('/lookup', authLimiter, async (req: Request, res: Response) => {
   try {
