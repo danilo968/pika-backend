@@ -58,14 +58,19 @@ router.post('/sync-profile', authenticate, async (req: AuthRequest, res: Respons
       return;
     }
 
+    // Accept age ranges ("16-25", "26-35", "36-45+") or YYYY-MM-DD dates
+    const validAgeRanges = ['16-25', '26-35', '36-45+'];
     if (dateOfBirth) {
-      if (typeof dateOfBirth !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
-        res.status(400).json({ error: 'Date of birth must be in YYYY-MM-DD format' });
-        return;
-      }
-      const age = calculateAge(dateOfBirth);
-      if (isNaN(age) || age < 16) {
-        res.status(400).json({ error: 'You must be at least 16 years old to use Pika' });
+      if (validAgeRanges.includes(dateOfBirth)) {
+        // Age range — store as-is, no further validation needed
+      } else if (typeof dateOfBirth === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+        const age = calculateAge(dateOfBirth);
+        if (isNaN(age) || age < 16) {
+          res.status(400).json({ error: 'You must be at least 16 years old to use Pika' });
+          return;
+        }
+      } else {
+        res.status(400).json({ error: 'Invalid date of birth format' });
         return;
       }
     }
